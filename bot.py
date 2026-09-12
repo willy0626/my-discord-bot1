@@ -20,5 +20,5 @@ async def ping(ctx):
 keep_alive()
 
 # 建議正式上線時用環境變數，或直接貼上你的 Token 測試
-TOKEN = os.getenv("DISCORD_TOKEN", "MTU0ODM0MDc4NTY2MDAzNTIwMg.GKeRE8.ULw0q9Yw02rGCqOF3UpDmUkQjSSmoc0fi6gYAg")
+TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
