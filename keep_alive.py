@@ -45,7 +45,8 @@ def logs_data():
     return jsonify(logs=log_buffer)
 
 # 取得機器人所在的伺服器與頻道資料
-@app.route("/api/guilds")
+# 確保這裡的路由名稱是 /api_guilds
+@app.route("/api_guilds")
 def api_guilds():
     if not bot_instance:
         return jsonify([])
