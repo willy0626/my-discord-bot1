@@ -2,30 +2,153 @@
 <html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
-    <title>Discord Bot 運行日誌</title>
+    <title>Discord Bot 控制面板</title>
     <style>
-        body { background-color: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', 'Courier New', monospace; padding: 20px; }
-        h1 { color: #4ec9b0; font-size: 20px; }
-        .console { background-color: #0f0f0f; border: 1px solid #333; padding: 15px; border-radius: 5px; height: 400px; overflow-y: scroll; white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
-        .status { margin-bottom: 10px; color: #9cdcfe; }
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', 'Microsoft JhengHei', sans-serif; padding: 20px; max-width: 800px; margin: auto; }
+        h1 { color: #4ec9b0; font-size: 22px; text-align: center; }
+        .card { background-color: #252526; border: 1px solid #333; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .card h3 { margin-top: 0; color: #9cdcfe; font-size: 16px; border-bottom: 1px solid #333; padding-bottom: 8px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; color: #b5cea8; }
+        select { width: 100%; padding: 10px; background-color: #3c3c3c; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 14px; }
+        .btn-container { display: flex; gap: 10px; }
+        button { flex: 1; padding: 10px; border: none; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; color: white; }
+        .btn-join { background-color: #5865F2; }
+        .btn-join:hover { background-color: #4752C4; }
+        .btn-leave { background-color: #ed4245; }
+        .btn-leave:hover { background-color: #c03537; }
+        .console { background-color: #0f0f0f; border: 1px solid #333; padding: 15px; border-radius: 5px; height: 250px; overflow-y: scroll; white-space: pre-wrap; font-size: 13px; line-height: 1.4; }
+        .status { margin-bottom: 10px; color: #9cdcfe; font-size: 13px; }
     </style>
     <script>
-        // 每 2 秒自動抓取最新 Log 並更新畫面
+        let guildsData = [];
+
+        // 載入伺服器與頻道清單
+        function loadGuilds() {
+            fetch('/api_guilds')
+                .then(res => res.json())
+                .then(data => {
+                    guildsData = data;
+                    const guildSelect = document.getElementById('guildSelect');
+                    guildSelect.innerHTML = '<option value="">-- 請選擇伺服器 --</option>';
+                    data.forEach(g => {
+                        let opt = document.createElement('option');
+                        opt.value = g.id;
+                        opt.textContent = g.name;
+                        guildSelect.appendChild(opt);
+                    });
+                });
+        }
+
+        // 當伺服器改變時，連動更新頻道下拉選單
+        function onGuildChange() {
+            const guildId = document.getElementById('guildSelect').value;
+            const channelSelect = document.getElementById('channelSelect');
+            channelSelect.innerHTML = '<option value="">-- 請先選擇伺服器 --</option>';
+            
+            if (!guildId) return;
+
+            const selectedGuild = guildsData.find(g => g.id === guildId);
+            if (selectedGuild && selectedGuild.channels.length > 0) {
+                channelSelect.innerHTML = '<option value="">-- 請選擇語音頻道 --</option>';
+                selectedGuild.channels.forEach(c => {
+                    let opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = c.name;
+                    channelSelect.appendChild(opt);
+                });
+            } else {
+                channelSelect.innerHTML = '<option value="">此伺服器無語音頻道</option>';
+            }
+        }
+
+        // 點擊加入頻道
+        function joinChannel() {
+            const guildId = document.getElementById('guildSelect').value;
+            const channelId = document.getElementById('channelSelect').value;
+            if (!guildId || !channelId) {
+                alert('請先完整選擇伺服器與語音頻道！');
+                return;
+            }
+
+            fetch('/api/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ guild_id: guildId, channel_id: channelId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if(data.success) alert('成功指令送出：機器人已加入語音！');
+                else alert('操作失敗: ' + data.error);
+            });
+        }
+
+        // 點擊離開頻道
+        function leaveChannel() {
+            const guildId = document.getElementById('guildSelect').value;
+            if (!guildId) {
+                alert('請先選擇目標伺服器！');
+                return;
+            }
+
+            fetch('/api/leave', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ guild_id: guildId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if(data.success) alert('成功指令送出：機器人已離開語音！');
+                else alert('操作失敗: ' + data.error);
+            });
+        }
+
+        // 定期更新 Log
         function fetchLogs() {
             fetch('/logs_data')
-                .then(response => response.json())
+                .then(res => res.json())
                 .then(data => {
                     const consoleDiv = document.getElementById('console');
                     consoleDiv.innerText = data.logs.join('\n');
-                    consoleDiv.scrollTop = consoleDiv.scrollHeight; // 自動捲動到最底部
+                    consoleDiv.scrollTop = consoleDiv.scrollHeight;
                 });
         }
-        setInterval(fetchLogs, 2000);
+
+        window.onload = function() {
+            loadGuilds();
+            setInterval(fetchLogs, 2000);
+        }
     </script>
 </head>
 <body>
-    <h1>🤖 Discord 機器人即時日誌 (Live Logs)</h1>
-    <div class="status">狀態：🟢 運行中 | 每 2 秒自動同步日誌</div>
-    <div id="console" class="console">載入中...</div>
+    <h1>🤖 Discord 機器人網頁控制台</h1>
+
+    <!-- 語音控制卡片 -->
+    <div class="card">
+        <h3>🔊 語音頻道控制</h3>
+        <div class="form-group">
+            <label>選擇伺服器：</label>
+            <select id="guildSelect" onchange="onGuildChange()">
+                <option value="">載入中...</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>選擇語音頻道：</label>
+            <select id="channelSelect">
+                <option value="">請先選擇伺服器</option>
+            </select>
+        </div>
+        <div class="btn-container">
+            <button class="btn-join" onclick="joinChannel()">加入頻道</button>
+            <button class="btn-leave" onclick="leaveChannel()">離開頻道</button>
+        </div>
+    </div>
+
+    <!-- 即時日誌卡片 -->
+    <div class="card">
+        <h3>📜 即時運行日誌 (Live Logs)</h3>
+        <div class="status">🟢 狀態：系統正常運行中（每 2 秒更新）</div>
+        <div id="console" class="console">載入中...</div>
+    </div>
 </body>
 </html>
