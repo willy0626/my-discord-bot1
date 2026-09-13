@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>Discord Bot 運行日誌</title>
+    <style>
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: 'Consolas', 'Courier New', monospace; padding: 20px; }
+        h1 { color: #4ec9b0; font-size: 20px; }
+        .console { background-color: #0f0f0f; border: 1px solid #333; padding: 15px; border-radius: 5px; height: 400px; overflow-y: scroll; white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+        .status { margin-bottom: 10px; color: #9cdcfe; }
+    </style>
+    <script>
+        // 每 2 秒自動抓取最新 Log 並更新畫面
+        function fetchLogs() {
+            fetch('/logs_data')
+                .then(response => response.json())
+                .then(data => {
+                    const consoleDiv = document.getElementById('console');
+                    consoleDiv.innerText = data.logs.join('\n');
+                    consoleDiv.scrollTop = consoleDiv.scrollHeight; // 自動捲動到最底部
+                });
+        }
+        setInterval(fetchLogs, 2000);
+    </script>
+</head>
+<body>
+    <h1>🤖 Discord 機器人即時日誌 (Live Logs)</h1>
+    <div class="status">狀態：🟢 運行中 | 每 2 秒自動同步日誌</div>
+    <div id="console" class="console">載入中...</div>
+</body>
+</html>
