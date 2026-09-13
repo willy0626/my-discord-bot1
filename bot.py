@@ -151,7 +151,8 @@ async def join(interaction: discord.Interaction):
   )
 
 
-keep_alive()
+# 把 bot 實體與 target_voice_channels 字典傳進去
+keep_alive(bot, target_voice_channels)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
