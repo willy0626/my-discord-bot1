@@ -1,7 +1,8 @@
+from datetime import datetime, timedelta
 import os
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from keep_alive import keep_alive
 
 intents = discord.Intents.default()
@@ -10,13 +11,52 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 用來記錄目前「應該要待在哪個語音頻道」字典（格式: {guild_id: channel_id}）
 target_voice_channels = {}
+
+# 記錄機器人啟動的時間點，用來計算運行時間
+start_time = datetime.utcnow()
+
+
+# 定義一個背景任務，每 5 秒切換一次狀態
+@tasks.loop(seconds=5)
+async def update_status():
+  # 使用一個狀態切換開關（利用迴圈輪流顯示不同內容）
+  if not hasattr(update_status, "state_toggle"):
+    update_status.state_toggle = 0
+
+  if update_status.state_toggle == 0:
+    # 狀態 1：正在遊玩 - 目前在 X 個伺服器
+    guild_count = len(bot.guilds)
+    activity = discord.Activity(
+        type=discord.ActivityType.playing, name=f"目前在 {guild_count} 個伺服器"
+    )
+    update_status.state_toggle = 1
+  else:
+    # 狀態 2：正在觀看 - 運行時間計算
+    now = datetime.utcnow()
+    uptime = now - start_time
+
+    days = uptime.days
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    uptime_str = f"運行時間：{days}天 {hours}時 {minutes}分"
+    activity = discord.Activity(
+        type=discord.ActivityType.watching, name=uptime_str
+    )
+    update_status.state_toggle = 0
+
+  await bot.change_presence(activity=activity)
 
 
 @bot.event
 async def on_ready():
   print(f"登入成功！目前身份：{bot.user}")
+
+  # 啟動 5 秒切換狀態的循環任務
+  if not update_status.is_running():
+    update_status.start()
+
   try:
     synced = await bot.tree.sync()
     print(f"已同步 {len(synced)} 個斜線指令")
@@ -24,22 +64,15 @@ async def on_ready():
     print(f"同步指令失敗: {e}")
 
 
-# 監聽語音狀態變化（實現語音斷線自動重連/心跳維護）
 @bot.event
 async def on_voice_state_update(member, before, after):
-  # 檢查是不是機器人自己
   if member.id == bot.user.id:
     guild_id = member.guild.id
-
-    # 如果機器人原本在頻道裡，但現在變成 None（代表被踢出、斷線或被移動）
     if before.channel and after.channel is None:
       print(f"[語音斷線警報] 機器人從 {before.channel.name} 斷線了！")
-
-      # 檢查我們是不是有紀錄這個伺服器原本要掛在哪個頻道
       if guild_id in target_voice_channels:
         channel_id = target_voice_channels[guild_id]
         channel = member.guild.get_channel(channel_id)
-
         if channel:
           try:
             await channel.connect()
@@ -68,7 +101,6 @@ class VoiceSelectDropdown(discord.ui.Select):
     guild_id = interaction.guild.id
 
     if channel and isinstance(channel, discord.VoiceChannel):
-      # 記錄目標頻道，以便斷線時自動重連
       target_voice_channels[guild_id] = channel.id
 
       if interaction.guild.voice_client:
