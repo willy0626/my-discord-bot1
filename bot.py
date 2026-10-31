@@ -3,6 +3,8 @@ from datetime import datetime
 import os
 import time
 import traceback
+import asyncio
+
 import discord
 from discord.ext import commands, tasks
 from keep_alive import keep_alive
@@ -25,6 +27,15 @@ boot_time = time.monotonic()
 
 last_voice_disconnect = {}
 last_voice_reconnect = {}
+
+# 每個伺服器各自使用一把鎖，避免重複重連
+voice_locks = {}
+
+
+def get_voice_lock(guild_id):
+    if guild_id not in voice_locks:
+        voice_locks[guild_id] = asyncio.Lock()
+    return voice_locks[guild_id]
 
 
 # ==============================
@@ -51,48 +62,78 @@ class SilenceSource(discord.AudioSource):
         # 48kHz、雙聲道、16-bit、20ms PCM 靜音
         return b"\x00" * 3840
 
+    def is_opus(self):
+        return False
+
+    def cleanup(self):
+        pass
+
+
+# ==============================
+# 播放器錯誤紀錄
+# ==============================
+
+def silence_after(error):
+    if error:
+        debug(f"❌ 靜音播放器發生錯誤：{error}")
+
+
+# ==============================
+# 語音連線及靜音
+# ==============================
 
 async def connect_with_silence(channel):
 
     guild = channel.guild
-    vc = guild.voice_client
+    guild_id = guild.id
 
-    if vc and vc.is_connected():
+    async with get_voice_lock(guild_id):
 
-        if vc.channel.id != channel.id:
-            await vc.move_to(channel)
+        vc = guild.voice_client
 
-        # 確保自我拒聽開啟
+        # 已經連線
+        if vc and vc.is_connected():
+
+            if vc.channel.id != channel.id:
+                debug(f"移動語音頻道：{vc.channel.name} → {channel.name}")
+                await vc.move_to(channel)
+
+        else:
+
+            # 清理舊連線
+            if vc:
+                try:
+                    await vc.disconnect(force=True)
+                except Exception as e:
+                    debug(f"清理舊語音連線失敗：{e}")
+
+            # 建立新連線
+            vc = await channel.connect(reconnect=True)
+
+        # 開啟自我拒聽
         await guild.change_voice_state(
             channel=channel,
             self_deaf=True
         )
 
-    else:
+        # 確保靜音音訊正在播放
+        if vc.is_paused():
+            vc.resume()
 
-        if vc:
-            try:
-                await vc.disconnect(force=True)
-            except Exception as e:
-                debug(f"清理舊語音連線失敗：{e}")
+        elif not vc.is_playing():
+            vc.play(
+                SilenceSource(),
+                after=silence_after
+            )
 
-        vc = await channel.connect(
-            reconnect=True,
-            self_deaf=True
+        last_voice_reconnect[guild_id] = datetime.utcnow()
+
+        debug(
+            f"✅ 語音連線成功：{channel.name} "
+            "| 靜音音訊已啟動 | 自我拒聽已開啟"
         )
 
-    # 啟動靜音音訊
-    if not vc.is_playing():
-        vc.play(SilenceSource())
-
-    last_voice_reconnect[guild.id] = datetime.utcnow()
-
-    debug(
-        f"✅ 語音連線成功：{channel.name} "
-        "| 靜音音訊已啟動 | 自我拒聽已開啟"
-    )
-
-    return vc
+        return vc
 
 
 # ==============================
@@ -130,6 +171,11 @@ async def update_status():
         update_status.state_toggle = 0
 
     await bot.change_presence(activity=activity)
+
+
+@update_status.before_loop
+async def before_update_status():
+    await bot.wait_until_ready()
 
 
 # ==============================
@@ -191,7 +237,7 @@ async def on_voice_state_update(member, before, after):
                 target_voice_channels[guild_id]
             )
 
-            if channel:
+            if channel and isinstance(channel, discord.VoiceChannel):
 
                 try:
                     debug(f"準備自動重連：{channel.name}")
@@ -258,6 +304,13 @@ class VoiceSelectDropdown(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
 
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "請在伺服器內使用。",
+                ephemeral=True
+            )
+            return
+
         channel_id = int(self.values[0])
         channel = interaction.guild.get_channel(channel_id)
         guild_id = interaction.guild.id
@@ -314,6 +367,7 @@ class VoiceSelectView(discord.ui.View):
 async def join(interaction: discord.Interaction):
 
     if interaction.guild is None:
+
         await interaction.response.send_message(
             "請在伺服器內使用此指令。",
             ephemeral=True
@@ -369,12 +423,20 @@ async def debug_command(interaction: discord.Interaction):
     connected = bool(vc and vc.is_connected())
     playing = bool(connected and vc.is_playing())
 
-    voice_status = "🟢 已連線" if connected else "🔴 未連線"
-    audio_status = "🟢 正在傳送" if playing else "🔴 未傳送"
+    voice_status = (
+        "🟢 已連線" if connected else "🔴 未連線"
+    )
 
-    voice_channel = vc.channel.name if connected else "無"
+    audio_status = (
+        "🟢 正在傳送" if playing else "🔴 未傳送"
+    )
+
+    voice_channel = (
+        vc.channel.name if connected else "無"
+    )
 
     voice_state = interaction.guild.me.voice
+
     deaf_status = (
         "🟢 已拒聽"
         if voice_state and voice_state.self_deaf
