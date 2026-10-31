@@ -28,14 +28,28 @@ boot_time = time.monotonic()
 last_voice_disconnect = {}
 last_voice_reconnect = {}
 
-# 每個伺服器各自使用一把鎖，避免重複重連
+# 每個伺服器各自使用一把鎖
 voice_locks = {}
+
+# 記錄每個伺服器的語音狀態
+# 預設：拒聽開啟、禁麥關閉
+voice_flags = {}
 
 
 def get_voice_lock(guild_id):
     if guild_id not in voice_locks:
         voice_locks[guild_id] = asyncio.Lock()
     return voice_locks[guild_id]
+
+
+def get_voice_flags(guild_id):
+    if guild_id not in voice_flags:
+        voice_flags[guild_id] = {
+            "self_deaf": True,
+            "self_mute": False
+        }
+
+    return voice_flags[guild_id]
 
 
 # ==============================
@@ -95,7 +109,10 @@ async def connect_with_silence(channel):
         if vc and vc.is_connected():
 
             if vc.channel.id != channel.id:
-                debug(f"移動語音頻道：{vc.channel.name} → {channel.name}")
+                debug(
+                    f"移動語音頻道："
+                    f"{vc.channel.name} → {channel.name}"
+                )
                 await vc.move_to(channel)
 
         else:
@@ -110,10 +127,14 @@ async def connect_with_silence(channel):
             # 建立新連線
             vc = await channel.connect(reconnect=True)
 
-        # 開啟自我拒聽
+        # 讀取目前設定
+        flags = get_voice_flags(guild_id)
+
+        # 套用拒聽與禁麥
         await guild.change_voice_state(
             channel=channel,
-            self_deaf=True
+            self_deaf=flags["self_deaf"],
+            self_mute=flags["self_mute"]
         )
 
         # 確保靜音音訊正在播放
@@ -130,10 +151,54 @@ async def connect_with_silence(channel):
 
         debug(
             f"✅ 語音連線成功：{channel.name} "
-            "| 靜音音訊已啟動 | 自我拒聽已開啟"
+            f"| 靜音音訊播放中 "
+            f"| 拒聽：{flags['self_deaf']} "
+            f"| 禁麥：{flags['self_mute']}"
         )
 
         return vc
+
+
+# ==============================
+# 網站控制：切換拒聽 / 禁麥
+# ==============================
+
+async def set_voice_flags(guild, flag, enabled):
+
+    vc = guild.voice_client
+
+    if not vc or not vc.is_connected():
+        raise RuntimeError("Bot 尚未連接語音頻道")
+
+    flags = get_voice_flags(guild.id)
+
+    if flag == "deafen":
+        flags["self_deaf"] = bool(enabled)
+
+    elif flag == "mute":
+        flags["self_mute"] = bool(enabled)
+
+    else:
+        raise ValueError("未知的語音控制項目")
+
+    # 只更新語音狀態，不停止播放器
+    await guild.change_voice_state(
+        channel=vc.channel,
+        self_deaf=flags["self_deaf"],
+        self_mute=flags["self_mute"]
+    )
+
+    debug(
+        f"🎛️ 語音狀態更新：{guild.name} "
+        f"| 拒聽：{flags['self_deaf']} "
+        f"| 禁麥：{flags['self_mute']} "
+        f"| 靜音音訊播放：{vc.is_playing()}"
+    )
+
+    return {
+        "self_deaf": flags["self_deaf"],
+        "self_mute": flags["self_mute"]
+    }
 
 
 # ==============================
@@ -323,10 +388,13 @@ class VoiceSelectDropdown(discord.ui.Select):
 
                 await connect_with_silence(channel)
 
+                flags = get_voice_flags(guild_id)
+
                 await interaction.response.send_message(
                     f"✅ 已加入 **{channel.name}**\n"
-                    "🔇 自我拒聽：已開啟\n"
-                    "🔇 靜音音訊：正在傳送",
+                    f"🎧 自我拒聽：{'開啟' if flags['self_deaf'] else '關閉'}\n"
+                    f"🎙️ 自我禁麥：{'開啟' if flags['self_mute'] else '關閉'}\n"
+                    "🔇 靜音音訊：正在播放",
                     ephemeral=True
                 )
 
@@ -336,7 +404,7 @@ class VoiceSelectDropdown(discord.ui.Select):
                 debug(traceback.format_exc())
 
                 await interaction.response.send_message(
-                    f"加入頻道失敗：{e}",
+                    f"加入語音頻道失敗：{e}",
                     ephemeral=True
                 )
 
@@ -418,7 +486,8 @@ async def debug_command(interaction: discord.Interaction):
     minutes = (uptime % 3600) // 60
     seconds = uptime % 60
 
-    vc = interaction.guild.voice_client
+    guild = interaction.guild
+    vc = guild.voice_client
 
     connected = bool(vc and vc.is_connected())
     playing = bool(connected and vc.is_playing())
@@ -428,14 +497,14 @@ async def debug_command(interaction: discord.Interaction):
     )
 
     audio_status = (
-        "🟢 正在傳送" if playing else "🔴 未傳送"
+        "🟢 正在播放靜音音訊" if playing else "🔴 未播放"
     )
 
     voice_channel = (
         vc.channel.name if connected else "無"
     )
 
-    voice_state = interaction.guild.me.voice
+    voice_state = guild.me.voice if guild.me else None
 
     deaf_status = (
         "🟢 已拒聽"
@@ -443,7 +512,13 @@ async def debug_command(interaction: discord.Interaction):
         else "🔴 未拒聽"
     )
 
-    guild_id = interaction.guild.id
+    mute_status = (
+        "🟢 已禁麥"
+        if voice_state and voice_state.self_mute
+        else "🔴 未禁麥"
+    )
+
+    guild_id = guild.id
 
     disconnect_time = last_voice_disconnect.get(guild_id)
     reconnect_time = last_voice_reconnect.get(guild_id)
@@ -510,6 +585,12 @@ async def debug_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
+        name="🎙️ 自我禁麥",
+        value=mute_status,
+        inline=True
+    )
+
+    embed.add_field(
         name="⚠️ 上次語音斷線",
         value=disconnect_text,
         inline=False
@@ -535,7 +616,12 @@ async def debug_command(interaction: discord.Interaction):
 
 debug("正在啟動 Discord Bot...")
 
-keep_alive(bot, target_voice_channels)
+keep_alive(
+    bot,
+    target_voice_channels,
+    connect_with_silence,
+    set_voice_flags
+)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
