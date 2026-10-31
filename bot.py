@@ -1,10 +1,9 @@
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import time
 import traceback
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 from keep_alive import keep_alive
 
@@ -21,11 +20,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 target_voice_channels = {}
 
-# 啟動時間
 start_time = datetime.utcnow()
 boot_time = time.monotonic()
 
-# 語音連線紀錄
 last_voice_disconnect = {}
 last_voice_reconnect = {}
 
@@ -45,6 +42,60 @@ def debug(message):
 
 
 # ==============================
+# 靜音音訊
+# ==============================
+
+class SilenceSource(discord.AudioSource):
+
+    def read(self):
+        # 48kHz、雙聲道、16-bit、20ms PCM 靜音
+        return b"\x00" * 3840
+
+
+async def connect_with_silence(channel):
+
+    guild = channel.guild
+    vc = guild.voice_client
+
+    if vc and vc.is_connected():
+
+        if vc.channel.id != channel.id:
+            await vc.move_to(channel)
+
+        # 確保自我拒聽開啟
+        await guild.change_voice_state(
+            channel=channel,
+            self_deaf=True
+        )
+
+    else:
+
+        if vc:
+            try:
+                await vc.disconnect(force=True)
+            except Exception as e:
+                debug(f"清理舊語音連線失敗：{e}")
+
+        vc = await channel.connect(
+            reconnect=True,
+            self_deaf=True
+        )
+
+    # 啟動靜音音訊
+    if not vc.is_playing():
+        vc.play(SilenceSource())
+
+    last_voice_reconnect[guild.id] = datetime.utcnow()
+
+    debug(
+        f"✅ 語音連線成功：{channel.name} "
+        "| 靜音音訊已啟動 | 自我拒聽已開啟"
+    )
+
+    return vc
+
+
+# ==============================
 # Bot 狀態切換
 # ==============================
 
@@ -56,29 +107,24 @@ async def update_status():
 
     if update_status.state_toggle == 0:
 
-        guild_count = len(bot.guilds)
-
         activity = discord.Activity(
             type=discord.ActivityType.playing,
-            name=f"目前在 {guild_count} 個伺服器"
+            name=f"目前在 {len(bot.guilds)} 個伺服器"
         )
 
         update_status.state_toggle = 1
 
     else:
 
-        now = datetime.utcnow()
-        uptime = now - start_time
+        uptime = datetime.utcnow() - start_time
 
         days = uptime.days
         hours, remainder = divmod(uptime.seconds, 3600)
         minutes, _ = divmod(remainder, 60)
 
-        uptime_str = f"運行時間：{days}天 {hours}時 {minutes}分"
-
         activity = discord.Activity(
             type=discord.ActivityType.watching,
-            name=uptime_str
+            name=f"運行時間：{days}天 {hours}時 {minutes}分"
         )
 
         update_status.state_toggle = 0
@@ -103,8 +149,8 @@ async def on_resumed():
 @bot.event
 async def on_ready():
 
-    debug(f"登入成功！身份：{bot.user}")
-    debug(f"目前伺服器數量：{len(bot.guilds)}")
+    debug(f"登入成功：{bot.user}")
+    debug(f"伺服器數量：{len(bot.guilds)}")
 
     if not update_status.is_running():
         update_status.start()
@@ -114,7 +160,6 @@ async def on_ready():
         debug(f"斜線指令同步成功：{len(synced)} 個")
 
     except Exception:
-        debug("斜線指令同步失敗：")
         debug(traceback.format_exc())
 
 
@@ -136,35 +181,30 @@ async def on_voice_state_update(member, before, after):
         last_voice_disconnect[guild_id] = datetime.utcnow()
 
         debug(
-            f"⚠️ 語音斷線：伺服器={member.guild.name} "
-            f"頻道={before.channel.name}"
+            f"⚠️ 語音斷線：{member.guild.name} / "
+            f"{before.channel.name}"
         )
 
         if guild_id in target_voice_channels:
 
-            channel_id = target_voice_channels[guild_id]
-            channel = member.guild.get_channel(channel_id)
+            channel = member.guild.get_channel(
+                target_voice_channels[guild_id]
+            )
 
             if channel:
 
                 try:
                     debug(f"準備自動重連：{channel.name}")
 
-                    await channel.connect()
-
-                    last_voice_reconnect[guild_id] = datetime.utcnow()
-
-                    debug(f"✅ 自動重連成功：{channel.name}")
+                    await connect_with_silence(channel)
 
                 except Exception as e:
 
                     debug(f"❌ 自動重連失敗：{e}")
                     debug(traceback.format_exc())
 
-    # Bot 成功加入語音頻道
+    # Bot 加入語音頻道
     elif before.channel is None and after.channel:
-
-        last_voice_reconnect[guild_id] = datetime.utcnow()
 
         debug(
             f"✅ 已加入語音頻道：{member.guild.name} / "
@@ -177,8 +217,8 @@ async def on_voice_state_update(member, before, after):
         if before.channel.id != after.channel.id:
 
             debug(
-                f"🔄 語音頻道移動："
-                f"{before.channel.name} → {after.channel.name}"
+                f"🔄 頻道移動：{before.channel.name} "
+                f"→ {after.channel.name}"
             )
 
 
@@ -189,7 +229,7 @@ async def on_voice_state_update(member, before, after):
 @bot.event
 async def on_error(event, *args, **kwargs):
 
-    debug(f"❌ 事件發生錯誤：{event}")
+    debug(f"❌ 事件錯誤：{event}")
     debug(traceback.format_exc())
 
 
@@ -213,7 +253,7 @@ class VoiceSelectDropdown(discord.ui.Select):
             placeholder="請選擇要加入的語音頻道...",
             min_values=1,
             max_values=1,
-            options=options,
+            options=options
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -226,33 +266,26 @@ class VoiceSelectDropdown(discord.ui.Select):
 
             target_voice_channels[guild_id] = channel.id
 
-            if interaction.guild.voice_client:
+            try:
 
-                await interaction.guild.voice_client.move_to(channel)
+                await connect_with_silence(channel)
 
                 await interaction.response.send_message(
-                    f"成功移動並鎖定語音頻道：**{channel.name}**",
-                    ephemeral=True,
+                    f"✅ 已加入 **{channel.name}**\n"
+                    "🔇 自我拒聽：已開啟\n"
+                    "🔇 靜音音訊：正在傳送",
+                    ephemeral=True
                 )
 
-            else:
+            except Exception as e:
 
-                try:
-                    await channel.connect()
+                debug(f"加入語音頻道失敗：{e}")
+                debug(traceback.format_exc())
 
-                    await interaction.response.send_message(
-                        f"成功加入語音頻道：**{channel.name}**",
-                        ephemeral=True,
-                    )
-
-                except Exception as e:
-
-                    debug(f"手動加入語音頻道失敗：{e}")
-
-                    await interaction.response.send_message(
-                        f"加入頻道失敗：{e}",
-                        ephemeral=True
-                    )
+                await interaction.response.send_message(
+                    f"加入頻道失敗：{e}",
+                    ephemeral=True
+                )
 
         else:
 
@@ -271,57 +304,59 @@ class VoiceSelectView(discord.ui.View):
 
 
 # ==============================
-# /join 指令
+# /join
 # ==============================
 
 @bot.tree.command(
     name="join",
-    description="選擇語音頻道讓機器人加入"
+    description="加入語音頻道並啟動靜音掛機"
 )
 async def join(interaction: discord.Interaction):
+
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "請在伺服器內使用此指令。",
+            ephemeral=True
+        )
+        return
 
     voice_channels = interaction.guild.voice_channels
 
     if not voice_channels:
 
         await interaction.response.send_message(
-            "這個伺服器內沒有找到任何語音頻道！",
+            "這個伺服器沒有語音頻道！",
             ephemeral=True
         )
-
         return
 
     view = VoiceSelectView(voice_channels)
 
     await interaction.response.send_message(
-        "請從下方選單選擇你要機器人進去的語音頻道：",
+        "請選擇要加入的語音頻道：",
         view=view,
         ephemeral=True
     )
 
 
 # ==============================
-# /debug 偵錯指令
+# /debug
 # ==============================
 
 @bot.tree.command(
     name="debug",
-    description="查看機器人運行及語音連線診斷資訊"
+    description="查看 Bot 運行及語音連線狀態"
 )
 async def debug_command(interaction: discord.Interaction):
 
     if interaction.guild is None:
 
         await interaction.response.send_message(
-            "請在 Discord 伺服器內使用此指令。",
+            "請在伺服器內使用。",
             ephemeral=True
         )
-
         return
 
-    now = datetime.utcnow()
-
-    # 程式運行時間
     uptime = int(time.monotonic() - boot_time)
 
     days = uptime // 86400
@@ -329,39 +364,32 @@ async def debug_command(interaction: discord.Interaction):
     minutes = (uptime % 3600) // 60
     seconds = uptime % 60
 
-    uptime_text = (
-        f"{days}天 {hours}小時 "
-        f"{minutes}分 {seconds}秒"
-    )
-
-    # Gateway Ping
-    latency = round(bot.latency * 1000, 2)
-
-    # 語音連線
     vc = interaction.guild.voice_client
 
-    if vc and vc.is_connected():
+    connected = bool(vc and vc.is_connected())
+    playing = bool(connected and vc.is_playing())
 
-        voice_status = "🟢 已連線"
-        voice_channel = vc.channel.name
+    voice_status = "🟢 已連線" if connected else "🔴 未連線"
+    audio_status = "🟢 正在傳送" if playing else "🔴 未傳送"
 
-    else:
+    voice_channel = vc.channel.name if connected else "無"
 
-        voice_status = "🔴 未連線"
-        voice_channel = "無"
+    voice_state = interaction.guild.me.voice
+    deaf_status = (
+        "🟢 已拒聽"
+        if voice_state and voice_state.self_deaf
+        else "🔴 未拒聽"
+    )
 
     guild_id = interaction.guild.id
 
-    # 上次斷線
     disconnect_time = last_voice_disconnect.get(guild_id)
+    reconnect_time = last_voice_reconnect.get(guild_id)
 
     disconnect_text = (
         disconnect_time.strftime("%Y-%m-%d %H:%M:%S UTC")
         if disconnect_time else "尚無紀錄"
     )
-
-    # 上次成功加入／重連
-    reconnect_time = last_voice_reconnect.get(guild_id)
 
     reconnect_text = (
         reconnect_time.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -372,21 +400,20 @@ async def debug_command(interaction: discord.Interaction):
         title="🤖 Discord Bot 偵錯面板",
         color=(
             discord.Color.green()
-            if vc and vc.is_connected()
-            else discord.Color.red()
+            if connected else discord.Color.red()
         ),
-        timestamp=now
+        timestamp=datetime.utcnow()
     )
 
     embed.add_field(
         name="⏱️ 程式運行時間",
-        value=uptime_text,
+        value=f"{days}天 {hours}小時 {minutes}分 {seconds}秒",
         inline=False
     )
 
     embed.add_field(
         name="📡 Gateway Ping",
-        value=f"{latency} ms",
+        value=f"{bot.latency * 1000:.2f} ms",
         inline=True
     )
 
@@ -409,20 +436,30 @@ async def debug_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
+        name="🔇 靜音音訊",
+        value=audio_status,
+        inline=True
+    )
+
+    embed.add_field(
+        name="🙉 自我拒聽",
+        value=deaf_status,
+        inline=True
+    )
+
+    embed.add_field(
         name="⚠️ 上次語音斷線",
         value=disconnect_text,
         inline=False
     )
 
     embed.add_field(
-        name="🔄 上次成功加入／重連",
+        name="🔄 上次成功重連",
         value=reconnect_text,
         inline=False
     )
 
-    embed.set_footer(
-        text="Bot Debug Monitor"
-    )
+    embed.set_footer(text="Bot Debug Monitor")
 
     await interaction.response.send_message(
         embed=embed,
