@@ -1,668 +1,784 @@
-
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Discord Bot 控制面板</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discord Voice 最高強度監控</title>
 
-    <style>
-        * {
-            box-sizing: border-box;
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 18px;
+    max-width: 1100px;
+    margin-inline: auto;
+    background: #15171c;
+    color: #e5e7eb;
+    font-family: Arial, "Microsoft JhengHei", sans-serif;
+}
+
+h1 {
+    text-align: center;
+    color: #8ea2ff;
+    font-size: 23px;
+}
+
+h2 {
+    color: #a5b4fc;
+    font-size: 17px;
+    border-bottom: 1px solid #343945;
+    padding-bottom: 10px;
+}
+
+.card {
+    background: #20232b;
+    border: 1px solid #343945;
+    border-radius: 12px;
+    padding: 17px;
+    margin-bottom: 16px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.metric {
+    background: #171a21;
+    border: 1px solid #343945;
+    border-radius: 9px;
+    padding: 13px;
+    min-width: 0;
+}
+
+.metric .label {
+    color: #9ca3af;
+    font-size: 12px;
+}
+
+.metric .value {
+    font-size: 21px;
+    font-weight: bold;
+    margin-top: 7px;
+    overflow-wrap: anywhere;
+}
+
+.good { color: #4ade80; }
+.warn { color: #facc15; }
+.bad { color: #fb7185; }
+.muted { color: #9ca3af; }
+
+select, button {
+    width: 100%;
+    padding: 12px;
+    margin-top: 8px;
+    border-radius: 7px;
+    border: 1px solid #454b59;
+    background: #303541;
+    color: white;
+    font-size: 14px;
+}
+
+button {
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+.actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.join { background: #5865f2; }
+.leave { background: #b93846; }
+.toggle { background: #343945; }
+.active { background: #176c4a; }
+
+.info {
+    white-space: pre-wrap;
+    line-height: 1.8;
+    background: #171a21;
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 12px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.events, .console {
+    background: #111318;
+    border: 1px solid #343945;
+    border-radius: 8px;
+    padding: 12px;
+    height: 260px;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.event {
+    border-bottom: 1px solid #292d36;
+    padding: 7px 0;
+}
+
+.event.error { color: #fb7185; }
+.event.warning { color: #facc15; }
+.event.info { color: #cbd5e1; }
+
+.small {
+    color: #9ca3af;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+@media (min-width: 650px) {
+    .grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+@media (max-width: 450px) {
+    body { padding: 11px; }
+    .actions { grid-template-columns: 1fr; }
+    .metric .value { font-size: 18px; }
+}
+</style>
+
+<script>
+let guildsData = [];
+let selectedGuildId = "";
+let monitorSessionStart = null;
+let monitorSessionSeconds = 0;
+let monitorTimer = null;
+let requestBusy = false;
+
+async function api(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+
+    if (!response.ok || data.success === false) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+    }
+
+    return data;
+}
+
+function setText(id, value) {
+    document.getElementById(id).textContent = value;
+}
+
+function setMetric(id, value, status = "") {
+    const el = document.getElementById(id);
+    el.textContent = value;
+    el.className = "value " + status;
+}
+
+function formatDuration(seconds) {
+    seconds = Math.max(0, Math.floor(seconds));
+
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    return `${days}天 ${hours}小時 ${minutes}分 ${secs}秒`;
+}
+
+async function loadGuilds() {
+    const data = await api("/api_guilds");
+    guildsData = data;
+
+    const select = document.getElementById("guildSelect");
+    select.innerHTML = '<option value="">選擇伺服器</option>';
+
+    data.forEach(guild => {
+        const option = document.createElement("option");
+        option.value = guild.id;
+        option.textContent = guild.name;
+        select.appendChild(option);
+    });
+}
+
+function onGuildChange() {
+    selectedGuildId = document.getElementById("guildSelect").value;
+
+    const channelSelect = document.getElementById("channelSelect");
+    channelSelect.innerHTML = '<option value="">選擇語音頻道</option>';
+
+    const guild = guildsData.find(g => g.id === selectedGuildId);
+
+    if (guild) {
+        guild.channels.forEach(channel => {
+            const option = document.createElement("option");
+            option.value = channel.id;
+            option.textContent = channel.name;
+            channelSelect.appendChild(option);
+        });
+    }
+
+    monitorSessionStart = null;
+    monitorSessionSeconds = 0;
+    updateSessionClock();
+
+    refreshAll();
+}
+
+async function joinChannel() {
+    const guildId = selectedGuildId;
+    const channelId = document.getElementById("channelSelect").value;
+
+    if (!guildId || !channelId) {
+        alert("請先選擇伺服器及語音頻道");
+        return;
+    }
+
+    try {
+        await api("/api/join", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                guild_id: guildId,
+                channel_id: channelId
+            })
+        });
+
+        alert("已送出加入語音要求");
+        await refreshAll();
+
+    } catch (error) {
+        alert("加入失敗：" + error.message);
+    }
+}
+
+async function leaveChannel() {
+    if (!selectedGuildId) {
+        alert("請先選擇伺服器");
+        return;
+    }
+
+    if (!confirm("確定要讓 Bot 離開語音頻道嗎？")) return;
+
+    try {
+        await api("/api/leave", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                guild_id: selectedGuildId
+            })
+        });
+
+        await refreshAll();
+
+    } catch (error) {
+        alert("離開失敗：" + error.message);
+    }
+}
+
+async function toggleFlag(flag) {
+    if (!selectedGuildId) return;
+
+    const button = document.getElementById(
+        flag === "deafen" ? "deafenBtn" : "muteBtn"
+    );
+
+    const enabled = !button.classList.contains("active");
+
+    button.disabled = true;
+
+    try {
+        await api("/api/voice-control", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                guild_id: selectedGuildId,
+                flag,
+                enabled
+            })
+        });
+
+        await refreshAll();
+
+    } catch (error) {
+        alert("切換失敗：" + error.message);
+
+    } finally {
+        button.disabled = false;
+    }
+}
+
+function updateSessionClock() {
+    if (!monitorSessionStart) {
+        setMetric("sessionTime", "尚未連線", "muted");
+        return;
+    }
+
+    const elapsed = Math.floor(
+        (Date.now() - monitorSessionStart) / 1000
+    );
+
+    setMetric(
+        "sessionTime",
+        formatDuration(elapsed),
+        "good"
+    );
+}
+
+function updateButtonState(data) {
+    const deafen = document.getElementById("deafenBtn");
+    const mute = document.getElementById("muteBtn");
+
+    const connected = Boolean(data.connected);
+
+    deafen.disabled = !connected;
+    mute.disabled = !connected;
+
+    deafen.classList.toggle("active", Boolean(data.self_deaf));
+    mute.classList.toggle("active", Boolean(data.self_mute));
+
+    deafen.textContent = data.self_deaf
+        ? "🎧 拒聽：開啟"
+        : "🎧 拒聽：關閉";
+
+    mute.textContent = data.self_mute
+        ? "🎙️ 禁麥：開啟"
+        : "🎙️ 禁麥：關閉";
+}
+
+async function refreshMonitor() {
+    if (!selectedGuildId) return;
+
+    const data = await api(
+        "/api/monitor?guild_id=" +
+        encodeURIComponent(selectedGuildId)
+    );
+
+    const monitor = data.monitor;
+    const item = monitor.selected_guild;
+
+    if (!item) return;
+
+    setMetric(
+        "connection",
+        item.connected ? "CONNECTED" : "DISCONNECTED",
+        item.connected ? "good" : "bad"
+    );
+
+    setText("channel", item.channel || "無");
+
+    setMetric(
+        "voiceLatency",
+        item.voice_latency_ms == null
+            ? "無資料"
+            : item.voice_latency_ms + " ms",
+        item.voice_latency_ms == null
+            ? "muted"
+            : item.voice_latency_ms > 1000
+                ? "bad"
+                : "good"
+    );
+
+    setMetric(
+        "voiceAverage",
+        item.voice_average_latency_ms == null
+            ? "無資料"
+            : item.voice_average_latency_ms + " ms"
+    );
+
+    setMetric(
+        "gateway",
+        monitor.gateway_latency_ms == null
+            ? "無資料"
+            : monitor.gateway_latency_ms + " ms"
+    );
+
+    setMetric(
+        "eventLoop",
+        monitor.event_loop_lag_ms + " ms",
+        monitor.event_loop_lag_ms > 1000 ? "bad" : "good"
+    );
+
+    setMetric(
+        "cpu",
+        monitor.cpu_percent == null
+            ? "無資料"
+            : monitor.cpu_percent + "%"
+    );
+
+    setMetric(
+        "memory",
+        monitor.memory_percent == null
+            ? "無資料"
+            : monitor.memory_percent + "%"
+    );
+
+    setMetric(
+        "audio",
+        item.audio_playing ? "PLAYING" : "STOPPED",
+        item.audio_playing ? "good" : "bad"
+    );
+
+    setText(
+        "frames",
+        Number(item.audio_frames_read || 0).toLocaleString()
+    );
+
+    setText(
+        "audioAge",
+        item.audio_last_read_seconds_ago == null
+            ? "尚無讀取紀錄"
+            : item.audio_last_read_seconds_ago + " 秒前"
+    );
+
+    setMetric(
+        "disconnects",
+        item.disconnect_count
+    );
+
+    setMetric(
+        "reconnects",
+        item.reconnect_count
+    );
+
+    setText(
+        "longest",
+        formatDuration(item.longest_session_seconds)
+    );
+
+    setText(
+        "deafenStatus",
+        item.self_deaf ? "開啟" : "關閉"
+    );
+
+    setText(
+        "muteStatus",
+        item.self_mute ? "開啟" : "關閉"
+    );
+
+    setText(
+        "udpStatus",
+        item.udp_verified
+            ? "已驗證"
+            : "無法由公開 API 直接驗證"
+    );
+
+    // 連線時間以 Bot 偵測到的本次連線開始時間為基準
+    if (item.session_started_at) {
+        const newStart = Date.parse(item.session_started_at);
+
+        if (monitorSessionStart !== newStart) {
+            monitorSessionStart = newStart;
         }
 
-        body {
-            background-color: #1e1e1e;
-            color: #d4d4d4;
-            font-family: 'Consolas', 'Microsoft JhengHei', sans-serif;
-            padding: 20px;
-            max-width: 800px;
-            margin: auto;
+        updateSessionClock();
+
+    } else {
+        monitorSessionStart = null;
+        updateSessionClock();
+    }
+
+    updateButtonState(item);
+
+    setText(
+        "lastUpdate",
+        "最後更新：" + new Date(monitor.updated_at).toLocaleString()
+    );
+
+    setText(
+        "botVersion",
+        "discord.py " + monitor.discord_py_version
+    );
+
+    setText(
+        "botUptime",
+        formatDuration(monitor.process_uptime)
+    );
+
+    setText(
+        "health",
+        monitor.bot_ready ? "Bot 已就緒" : "Bot 尚未就緒"
+    );
+}
+
+async function refreshEvents() {
+    if (!selectedGuildId) return;
+
+    const data = await api(
+        "/api/events?guild_id=" +
+        encodeURIComponent(selectedGuildId)
+    );
+
+    const box = document.getElementById("events");
+    box.innerHTML = "";
+
+    data.events.slice().reverse().forEach(event => {
+        const div = document.createElement("div");
+        div.className = "event " + event.severity;
+
+        const time = new Date(event.time).toLocaleString();
+
+        div.textContent =
+            `[${time}] [${event.type}] ${event.message}`;
+
+        box.appendChild(div);
+    });
+}
+
+async function refreshVoiceStatus() {
+    if (!selectedGuildId) return;
+
+    const data = await api(
+        "/api/voice-status?guild_id=" +
+        encodeURIComponent(selectedGuildId)
+    );
+
+    updateButtonState(data);
+
+    setText(
+        "voiceStatus",
+        data.connected
+            ? `已連接：${data.channel}\n拒聽：${data.self_deaf ? "開啟" : "關閉"}\n禁麥：${data.self_mute ? "開啟" : "關閉"}\n播放器：${data.audio_playing ? "播放中" : "停止"}`
+            : "尚未連接語音頻道"
+    );
+}
+
+async function refreshAll() {
+    if (!selectedGuildId || requestBusy) return;
+
+    requestBusy = true;
+
+    try {
+        await Promise.all([
+            refreshMonitor(),
+            refreshEvents(),
+            refreshVoiceStatus()
+        ]);
+
+    } catch (error) {
+        setText("health", "監控讀取失敗：" + error.message);
+
+    } finally {
+        requestBusy = false;
+    }
+}
+
+async function fetchLogs() {
+    try {
+        const data = await api("/logs_data");
+
+        const box = document.getElementById("console");
+        const shouldScroll =
+            box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+
+        box.textContent = (data.logs || []).join("\n");
+
+        if (shouldScroll) {
+            box.scrollTop = box.scrollHeight;
         }
 
-        h1 {
-            color: #4ec9b0;
-            font-size: 22px;
-            text-align: center;
-        }
-
-        .card {
-            background-color: #252526;
-            border: 1px solid #333;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-
-        .card h3 {
-            margin-top: 0;
-            color: #9cdcfe;
-            font-size: 16px;
-            border-bottom: 1px solid #333;
-            padding-bottom: 8px;
-        }
-
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-size: 14px;
-            color: #b5cea8;
-        }
-
-        select {
-            width: 100%;
-            padding: 10px;
-            background-color: #3c3c3c;
-            color: #fff;
-            border: 1px solid #555;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-
-        .btn-container {
-            display: flex;
-            gap: 10px;
-        }
-
-        button {
-            flex: 1;
-            padding: 11px;
-            border: none;
-            border-radius: 5px;
-            font-size: 14px;
-            font-weight: bold;
-            cursor: pointer;
-            color: white;
-            transition: 0.2s;
-        }
-
-        button:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-
-        .btn-join {
-            background-color: #5865F2;
-        }
-
-        .btn-join:hover:not(:disabled) {
-            background-color: #4752C4;
-        }
-
-        .btn-leave {
-            background-color: #ed4245;
-        }
-
-        .btn-leave:hover:not(:disabled) {
-            background-color: #c03537;
-        }
-
-        /* 拒聽與禁麥控制 */
-
-        .voice-controls {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .btn-toggle {
-            background-color: #3c3c3c;
-            border: 1px solid #555;
-        }
-
-        .btn-toggle:hover:not(:disabled) {
-            background-color: #505050;
-        }
-
-        .btn-toggle.active {
-            background-color: #237a57;
-            border: 1px solid #35a879;
-        }
-
-        .btn-toggle.active:hover:not(:disabled) {
-            background-color: #1d6246;
-        }
-
-        .voice-status {
-            margin-top: 15px;
-            padding: 12px;
-            background-color: #181818;
-            border: 1px solid #333;
-            border-radius: 5px;
-            font-size: 13px;
-            line-height: 1.7;
-            color: #9cdcfe;
-            overflow-wrap: anywhere;
-        }
-
-        .status {
-            margin-bottom: 10px;
-            color: #9cdcfe;
-            font-size: 13px;
-        }
-
-        .console {
-            background-color: #0f0f0f;
-            border: 1px solid #333;
-            padding: 15px;
-            border-radius: 5px;
-            height: 250px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-            font-size: 13px;
-            line-height: 1.5;
-        }
-
-        @media (max-width: 500px) {
-            body {
-                padding: 12px;
-            }
-
-            .card {
-                padding: 15px;
-            }
-
-            .btn-container,
-            .voice-controls {
-                flex-direction: column;
-            }
-        }
-    </style>
-
-    <script>
-        let guildsData = [];
-        let statusRequestRunning = false;
-
-        // ==============================
-        // API 錯誤處理
-        // ==============================
-
-        async function apiRequest(url, options = {}) {
-            const response = await fetch(url, options);
-
-            if (!response.ok) {
-                throw new Error(
-                    `HTTP ${response.status}: ${response.statusText}`
-                );
-            }
-
-            return await response.json();
-        }
-
-        // ==============================
-        // 載入伺服器清單
-        // ==============================
-
-        async function loadGuilds() {
-            const guildSelect = document.getElementById('guildSelect');
-
-            try {
-                const data = await apiRequest('/api_guilds');
-
-                guildsData = data;
-
-                guildSelect.innerHTML =
-                    '<option value="">-- 請選擇伺服器 --</option>';
-
-                data.forEach(guild => {
-                    const option = document.createElement('option');
-
-                    option.value = guild.id;
-                    option.textContent = guild.name;
-
-                    guildSelect.appendChild(option);
-                });
-
-                if (data.length === 0) {
-                    guildSelect.innerHTML =
-                        '<option value="">目前沒有可用伺服器</option>';
-                }
-
-            } catch (error) {
-                console.error('載入伺服器失敗：', error);
-
-                guildSelect.innerHTML =
-                    '<option value="">載入失敗，請重新整理</option>';
-            }
-        }
-
-        // ==============================
-        // 切換伺服器
-        // ==============================
-
-        function onGuildChange() {
-            const guildId =
-                document.getElementById('guildSelect').value;
-
-            const channelSelect =
-                document.getElementById('channelSelect');
-
-            channelSelect.innerHTML =
-                '<option value="">-- 請先選擇伺服器 --</option>';
-
-            if (!guildId) {
-                updateVoiceStatus();
-                return;
-            }
-
-            const selectedGuild = guildsData.find(
-                guild => guild.id === guildId
-            );
-
-            if (
-                selectedGuild &&
-                selectedGuild.channels.length > 0
-            ) {
-                channelSelect.innerHTML =
-                    '<option value="">-- 請選擇語音頻道 --</option>';
-
-                selectedGuild.channels.forEach(channel => {
-                    const option = document.createElement('option');
-
-                    option.value = channel.id;
-                    option.textContent = channel.name;
-
-                    channelSelect.appendChild(option);
-                });
-
-            } else {
-                channelSelect.innerHTML =
-                    '<option value="">此伺服器沒有語音頻道</option>';
-            }
-
-            updateVoiceStatus();
-        }
-
-        // ==============================
-        // 加入語音頻道
-        // ==============================
-
-        async function joinChannel() {
-            const guildId =
-                document.getElementById('guildSelect').value;
-
-            const channelId =
-                document.getElementById('channelSelect').value;
-
-            if (!guildId || !channelId) {
-                alert('請先選擇伺服器與語音頻道！');
-                return;
-            }
-
-            const joinBtn =
-                document.querySelector('.btn-join');
-
-            joinBtn.disabled = true;
-
-            try {
-                const data = await apiRequest('/api/join', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        guild_id: guildId,
-                        channel_id: channelId
-                    })
-                });
-
-                if (data.success) {
-                    alert('✅ 機器人已成功加入語音頻道！');
-                } else {
-                    alert('❌ 加入失敗：' + data.error);
-                }
-
-            } catch (error) {
-                alert('❌ 網路或伺服器錯誤：' + error.message);
-
-            } finally {
-                joinBtn.disabled = false;
-                updateVoiceStatus();
-            }
-        }
-
-        // ==============================
-        // 離開語音頻道
-        // ==============================
-
-        async function leaveChannel() {
-            const guildId =
-                document.getElementById('guildSelect').value;
-
-            if (!guildId) {
-                alert('請先選擇目標伺服器！');
-                return;
-            }
-
-            const leaveBtn =
-                document.querySelector('.btn-leave');
-
-            leaveBtn.disabled = true;
-
-            try {
-                const data = await apiRequest('/api/leave', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        guild_id: guildId
-                    })
-                });
-
-                if (data.success) {
-                    alert('✅ 機器人已離開語音頻道！');
-                } else {
-                    alert('❌ 離開失敗：' + data.error);
-                }
-
-            } catch (error) {
-                alert('❌ 網路或伺服器錯誤：' + error.message);
-
-            } finally {
-                leaveBtn.disabled = false;
-                updateVoiceStatus();
-            }
-        }
-
-        // ==============================
-        // 更新拒聽 / 禁麥狀態
-        // ==============================
-
-        async function updateVoiceStatus() {
-            const guildId =
-                document.getElementById('guildSelect').value;
-
-            const deafenBtn =
-                document.getElementById('deafenBtn');
-
-            const muteBtn =
-                document.getElementById('muteBtn');
-
-            const status =
-                document.getElementById('voiceStatus');
-
-            if (!guildId) {
-                deafenBtn.disabled = true;
-                muteBtn.disabled = true;
-
-                status.textContent = '請先選擇伺服器';
-
-                return;
-            }
-
-            if (statusRequestRunning) {
-                return;
-            }
-
-            statusRequestRunning = true;
-
-            try {
-                const data = await apiRequest(
-                    '/api/voice-status?guild_id=' +
-                    encodeURIComponent(guildId)
-                );
-
-                if (!data.success) {
-                    throw new Error(data.error || '無法讀取語音狀態');
-                }
-
-                if (!data.connected) {
-                    deafenBtn.disabled = true;
-                    muteBtn.disabled = true;
-
-                    deafenBtn.textContent = '🎧 拒聽：未連線';
-                    muteBtn.textContent = '🎙️ 禁麥：未連線';
-
-                    deafenBtn.classList.remove('active');
-                    muteBtn.classList.remove('active');
-
-                    status.textContent = '⚪ 尚未連接語音頻道';
-
-                    return;
-                }
-
-                // 更新按鈕狀態
-                deafenBtn.disabled = false;
-                muteBtn.disabled = false;
-
-                deafenBtn.textContent = data.self_deaf
-                    ? '🎧 拒聽：開啟'
-                    : '🎧 拒聽：關閉';
-
-                muteBtn.textContent = data.self_mute
-                    ? '🎙️ 禁麥：開啟'
-                    : '🎙️ 禁麥：關閉';
-
-                deafenBtn.classList.toggle(
-                    'active',
-                    Boolean(data.self_deaf)
-                );
-
-                muteBtn.classList.toggle(
-                    'active',
-                    Boolean(data.self_mute)
-                );
-
-                const audioText = data.audio_playing
-                    ? '🟢 播放器運作中'
-                    : '🔴 播放器未播放';
-
-                status.textContent =
-                    '🟢 已連接語音頻道：' +
-                    data.channel +
-                    '\n' +
-                    '🎧 自我拒聽：' +
-                    (data.self_deaf ? '開啟' : '關閉') +
-                    '\n' +
-                    '🎙️ 自我禁麥：' +
-                    (data.self_mute ? '開啟' : '關閉') +
-                    '\n' +
-                    '🔇 靜音音訊：' +
-                    audioText;
-
-            } catch (error) {
-                console.error('讀取語音狀態失敗：', error);
-
-                status.textContent =
-                    '⚠️ 讀取語音狀態失敗：' + error.message;
-
-                deafenBtn.disabled = true;
-                muteBtn.disabled = true;
-
-            } finally {
-                statusRequestRunning = false;
-            }
-        }
-
-        // ==============================
-        // 切換拒聽 / 禁麥
-        // ==============================
-
-        async function toggleVoiceFlag(flag) {
-            const guildId =
-                document.getElementById('guildSelect').value;
-
-            if (!guildId) {
-                alert('請先選擇伺服器！');
-                return;
-            }
-
-            const button = flag === 'deafen'
-                ? document.getElementById('deafenBtn')
-                : document.getElementById('muteBtn');
-
-            const currentlyEnabled =
-                button.classList.contains('active');
-
-            button.disabled = true;
-
-            try {
-                const data = await apiRequest('/api/voice-control', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        guild_id: guildId,
-                        flag: flag,
-                        enabled: !currentlyEnabled
-                    })
-                });
-
-                if (!data.success) {
-                    throw new Error(data.error || '操作失敗');
-                }
-
-                // 立即重新讀取 Discord 回報的狀態
-                await updateVoiceStatus();
-
-            } catch (error) {
-                alert('❌ 切換失敗：' + error.message);
-                await updateVoiceStatus();
-
-            } finally {
-                button.disabled = false;
-            }
-        }
-
-        // ==============================
-        // 即時日誌
-        // ==============================
-
-        async function fetchLogs() {
-            try {
-                const data = await apiRequest('/logs_data');
-
-                const consoleDiv =
-                    document.getElementById('console');
-
-                const shouldScroll =
-                    consoleDiv.scrollTop + consoleDiv.clientHeight >=
-                    consoleDiv.scrollHeight - 30;
-
-                consoleDiv.innerText =
-                    (data.logs || []).join('\n');
-
-                if (shouldScroll) {
-                    consoleDiv.scrollTop =
-                        consoleDiv.scrollHeight;
-                }
-
-            } catch (error) {
-                console.error('讀取日誌失敗：', error);
-            }
-        }
-
-        // ==============================
-        // 網頁初始化
-        // ==============================
-
-        window.onload = function() {
-            loadGuilds();
-
-            fetchLogs();
-            updateVoiceStatus();
-
-            setInterval(fetchLogs, 2000);
-            setInterval(updateVoiceStatus, 2000);
-        };
-    </script>
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+window.addEventListener("load", async () => {
+    try {
+        await loadGuilds();
+
+        setInterval(refreshAll, 5000);
+        setInterval(fetchLogs, 3000);
+        setInterval(updateSessionClock, 1000);
+
+        fetchLogs();
+
+    } catch (error) {
+        setText("health", "初始化失敗：" + error.message);
+    }
+});
+</script>
 </head>
 
 <body>
 
-    <h1>🤖 Discord 機器人網頁控制台</h1>
+<h1>🤖 Discord Voice 最高強度監控</h1>
 
-    <!-- 語音頻道控制 -->
+<div class="card">
+    <h2>🔊 語音頻道控制</h2>
 
-    <div class="card">
+    <label>選擇伺服器</label>
+    <select id="guildSelect" onchange="onGuildChange()">
+        <option value="">載入中...</option>
+    </select>
 
-        <h3>🔊 語音頻道控制</h3>
+    <label>選擇語音頻道</label>
+    <select id="channelSelect">
+        <option value="">請先選擇伺服器</option>
+    </select>
 
-        <div class="form-group">
-            <label for="guildSelect">選擇伺服器：</label>
-
-            <select id="guildSelect" onchange="onGuildChange()">
-                <option value="">載入中...</option>
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="channelSelect">選擇語音頻道：</label>
-
-            <select id="channelSelect">
-                <option value="">請先選擇伺服器</option>
-            </select>
-        </div>
-
-        <div class="btn-container">
-
-            <button
-                class="btn-join"
-                onclick="joinChannel()">
-                ➕ 加入頻道
-            </button>
-
-            <button
-                class="btn-leave"
-                onclick="leaveChannel()">
-                🚪 離開頻道
-            </button>
-
-        </div>
-
-        <h3 style="margin-top: 22px;">
-            🎛️ Bot 語音狀態控制
-        </h3>
-
-        <div class="voice-controls">
-
-            <button
-                id="deafenBtn"
-                class="btn-toggle"
-                onclick="toggleVoiceFlag('deafen')"
-                disabled>
-                🎧 拒聽：未連線
-            </button>
-
-            <button
-                id="muteBtn"
-                class="btn-toggle"
-                onclick="toggleVoiceFlag('mute')"
-                disabled>
-                🎙️ 禁麥：未連線
-            </button>
-
-        </div>
-
-        <div id="voiceStatus" class="voice-status">
-            請先選擇伺服器
-        </div>
-
+    <div class="actions">
+        <button class="join" onclick="joinChannel()">➕ 加入頻道</button>
+        <button class="leave" onclick="leaveChannel()">🚪 離開頻道</button>
     </div>
 
-    <!-- 即時日誌 -->
+    <div class="actions">
+        <button id="deafenBtn" class="toggle"
+            onclick="toggleFlag('deafen')" disabled>
+            🎧 拒聽：未連線
+        </button>
 
-    <div class="card">
-
-        <h3>📜 即時運行日誌（Live Logs）</h3>
-
-        <div class="status">
-            🟢 日誌每 2 秒更新一次
-        </div>
-
-        <div id="console" class="console">
-            載入中...
-        </div>
-
+        <button id="muteBtn" class="toggle"
+            onclick="toggleFlag('mute')" disabled>
+            🎙️ 禁麥：未連線
+        </button>
     </div>
+
+    <div class="info" id="voiceStatus">請先選擇伺服器</div>
+</div>
+
+<div class="card">
+    <h2>⏱️ Discord Voice 連線時間</h2>
+
+    <div class="grid">
+        <div class="metric">
+            <div class="label">語音連線狀態</div>
+            <div class="value muted" id="connection">等待資料</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">本次連續時間（本機估算）</div>
+            <div class="value" id="sessionTime">等待資料</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">最長連線紀錄</div>
+            <div class="value" id="longest">0秒</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">目前頻道</div>
+            <div class="value" id="channel">無</div>
+        </div>
+    </div>
+
+    <p class="small">
+        本次連續時間以 Bot 偵測到的 Discord 語音狀態為基準，
+        不等於直接讀取 Discord 用戶端的計時器。
+    </p>
+</div>
+
+<div class="card">
+    <h2>📡 連線健康監控</h2>
+
+    <div class="grid">
+        <div class="metric">
+            <div class="label">Voice WebSocket 即時延遲</div>
+            <div class="value" id="voiceLatency">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">Voice WebSocket 平均延遲</div>
+            <div class="value" id="voiceAverage">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">Gateway 延遲</div>
+            <div class="value" id="gateway">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">事件循環延遲</div>
+            <div class="value" id="eventLoop">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">CPU 使用率</div>
+            <div class="value" id="cpu">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">RAM 使用率</div>
+            <div class="value" id="memory">--</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>🔇 靜音音訊監控</h2>
+
+    <div class="grid">
+        <div class="metric">
+            <div class="label">播放器狀態</div>
+            <div class="value" id="audio">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">音訊讀取次數</div>
+            <div class="value" id="frames">0</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">最後音訊讀取</div>
+            <div class="value" id="audioAge">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">UDP 確認</div>
+            <div class="value warn" id="udpStatus">未驗證</div>
+        </div>
+    </div>
+
+    <p class="small">
+        音訊讀取次數只能證明本機播放器正在讀取資料，
+        不能證明 UDP 封包已抵達 Discord 伺服器。
+    </p>
+</div>
+
+<div class="card">
+    <h2>📊 歷史統計</h2>
+
+    <div class="grid">
+        <div class="metric">
+            <div class="label">斷線次數</div>
+            <div class="value" id="disconnects">0</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">重連次數</div>
+            <div class="value" id="reconnects">0</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">自我拒聽</div>
+            <div class="value" id="deafenStatus">--</div>
+        </div>
+
+        <div class="metric">
+            <div class="label">自我禁麥</div>
+            <div class="value" id="muteStatus">--</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>🚨 即時異常事件</h2>
+    <div class="events" id="events">等待監控資料...</div>
+</div>
+
+<div class="card">
+    <h2>📜 即時運行日誌</h2>
+    <div class="small" id="health">等待連線...</div>
+    <div class="small" id="lastUpdate">尚未更新</div>
+    <div class="small" id="botUptime">程式運行時間：--</div>
+    <div class="small" id="botVersion">discord.py --</div>
+    <div class="console" id="console">載入中...</div>
+</div>
 
 </body>
 </html>
