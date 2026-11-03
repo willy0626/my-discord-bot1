@@ -7,11 +7,24 @@ import math
 import json
 import asyncio
 import traceback
+import logging
 
 import discord
 import psutil
 from discord.ext import commands, tasks
 from keep_alive import keep_alive
+
+# ==============================
+# Voice WebSocket 診斷日誌
+# Render Logs 會記錄 discord.py 的 Voice WebSocket 關閉碼與重連訊息
+# 不要把整個 discord logger 設成 DEBUG，避免產生大量無關日誌
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+)
+logging.getLogger("discord.voice_state").setLevel(logging.DEBUG)
+logging.getLogger("discord.gateway").setLevel(logging.INFO)
+logging.getLogger("discord.client").setLevel(logging.INFO)
 
 # ==============================
 # 基本設定
@@ -283,6 +296,7 @@ async def set_voice_flags(guild, flag, enabled):
 
 async def delayed_reconnect(guild_id):
     try:
+        debug(f"[Voice診斷] 偵測到語音狀態離線，等待 15 秒讓 discord.py 內建重連 | guild={guild_id}")
         await asyncio.sleep(15)  # 先讓 discord.py 內建 Voice reconnect 有機會恢復
         guild = bot.get_guild(guild_id)
         channel_id = target_voice_channels.get(guild_id)
@@ -290,11 +304,15 @@ async def delayed_reconnect(guild_id):
             return
         vc = guild.voice_client
         if vc and vc.is_connected():
+            debug(f"[Voice診斷] 等待 15 秒後 Voice 已連線；採用內建重連結果，不另建連線 | guild={guild_id} | channel={vc.channel}")
+            add_event(guild_id, "voice_builtin_reconnect_ok", "等待 15 秒後 Voice 已恢復連線", "info")
             # discord.py 已自行恢復，不要再建立第二條連線
             if not vc.is_playing():
                 await recover_audio_player(guild_id)
             return
 
+        debug(f"[Voice診斷] 等待 15 秒後仍未連線，準備啟動自訂重連 | guild={guild_id} | channel_id={channel_id}")
+        add_event(guild_id, "voice_builtin_reconnect_not_restored", "等待 15 秒後仍未連線，準備啟動自訂重連", "warning")
         channel = guild.get_channel(channel_id)
         if not isinstance(channel, discord.VoiceChannel):
             add_event(guild_id, "reconnect_failed", "找不到原本的語音頻道", "error")
@@ -302,7 +320,9 @@ async def delayed_reconnect(guild_id):
 
         for attempt in range(1, 4):
             try:
+                debug(f"[Voice診斷] 自訂重連開始 | guild={guild_id} | attempt={attempt}/3")
                 await connect_with_silence(channel)
+                debug(f"[Voice診斷] 自訂重連成功 | guild={guild_id} | attempt={attempt}/3")
                 return
             except Exception as exc:
                 debug(f"自動重連第 {attempt} 次失敗：{exc}")
@@ -448,6 +468,7 @@ async def on_voice_state_update(member, before, after):
     gid = member.guild.id
 
     if before.channel is not None and after.channel is None:
+        debug(f"[Voice診斷] Bot Voice State：{before.channel.name} → None | guild={gid}")
         # 如果沒有預設目標，視為使用者/管理員主動移除
         if gid not in target_voice_channels:
             finish_voice_session(gid, "Bot 離開語音頻道")
@@ -464,6 +485,7 @@ async def on_voice_state_update(member, before, after):
         reconnect_tasks[gid] = asyncio.create_task(delayed_reconnect(gid))
 
     elif before.channel is None and after.channel is not None:
+        debug(f"[Voice診斷] Bot Voice State：None → {after.channel.name} | guild={gid}")
         # 若是剛加入，建立 session；若是自動重連，也會由 connect 函式處理
         if gid not in voice_sessions:
             start_voice_session(gid, after.channel)
